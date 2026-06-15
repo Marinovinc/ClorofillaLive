@@ -1324,7 +1324,7 @@ function marchingSquares(val, lats, lons, thr){
 async function computeFront(){
   const key = sel.value, p = PRODUCTS[key];
   if (!p.point){ frontInfo.textContent = 'Il fronte richiede un prodotto Mediterraneo (la sorgente PACE non da il valore puntuale).'; return; }
-  const b = map.getBounds(), N = 14;
+  const b = map.getBounds(), N = 11;   // modalita' pelagica: campiona chl + SST (2 chiamate/cella)
   const lats = [], lons = [];
   for (let i = 0; i < N; i++) lats.push(b.getNorth() - (b.getNorth()-b.getSouth()) * i/(N-1));
   for (let j = 0; j < N; j++) lons.push(b.getWest()  + (b.getEast()-b.getWest())   * j/(N-1));
@@ -1345,6 +1345,17 @@ async function computeFront(){
   if (valid.length < 12){ frontInfo.textContent = 'Dati insufficienti (nuvole/terra) per il fronte in questa vista.'; return; }
   const thr = valid[Math.floor(valid.length/2)];   // mediana = soglia adattiva
 
+  // === SST sulla stessa griglia (fronte termico - modalita' pelagica scouting) ===
+  let done2 = 0;
+  const sstFlat = await pool(cells, 8, async ([i,j]) => {
+    const r = await sampleValue(PRODUCTS.SST_L4, 'SST_L4', lats[i], lons[j]);
+    frontInfo.textContent = 'Campionamento SST... ' + (++done2) + '/' + cells.length;
+    return sstToC(r);
+  });
+  const sstVal = Array.from({length:N}, (_,i) => sstFlat.slice(i*N, i*N+N));
+  const sstValid = sstFlat.filter(v => v!=null && !isNaN(v)).sort((a,b)=>a-b);
+  const sstMed = sstValid.length ? sstValid[Math.floor(sstValid.length/2)] : NaN;
+
   frontSegments = marchingSquares(val, lats, lons, thr);
   frontLayer.clearLayers();
   // Le isolinee del fronte NON vengono piu' disegnate: creavano un reticolo magenta
@@ -1359,6 +1370,9 @@ async function computeFront(){
   const med = thr;                                       // mediana della vista
   const p75 = valid[Math.floor(0.75 * (valid.length - 1))];   // quartile superiore
   const absMode = med >= CHL_FORAGE_LO;                  // true solo se la scena e' ricca
+  function gradAt(V,i,j){ const v=V[i][j]; if(v==null||isNaN(v)) return 0; let g=0;
+    [[i-1,j],[i+1,j],[i,j-1],[i,j+1]].forEach(([a,b])=>{ if(a>=0&&a<N&&b>=0&&b<N&&V[a][b]!=null&&!isNaN(V[a][b])) g=Math.max(g,Math.abs(v-V[a][b])); }); return g; }
+  let sstGmax=0; for(let i=0;i<N;i++)for(let j=0;j<N;j++){ const sg=gradAt(sstVal,i,j); if(sg>sstGmax) sstGmax=sg; }
   const prodCells = [];
   for (let i = 0; i < N; i++){
     for (let j = 0; j < N; j++){
@@ -1366,18 +1380,18 @@ async function computeFront(){
       if (isNaN(v)) continue;
       const productive = absMode ? (v >= CHL_FORAGE_LO && v <= CHL_FORAGE_HI) : (v >= p75);
       if (!productive) continue;
-      let g = 0;
-      [[i-1,j],[i+1,j],[i,j-1],[i,j+1]].forEach(([a,b]) => {
-        if (a>=0 && a<N && b>=0 && b<N && !isNaN(val[a][b])) g = Math.max(g, Math.abs(v - val[a][b]));
-      });
-      prodCells.push({ i, j, v, g, relG: med > 0 ? g / med : 0 });
+      const g = gradAt(val,i,j), sg = gradAt(sstVal,i,j), t = sstVal[i][j];
+      const fChl = med>0 ? Math.min(1,(g/med)/0.5) : 0;        // fronte clorofilla normalizzato
+      const fSst = sstGmax>0 ? sg/sstGmax : 0;                 // fronte termico normalizzato
+      prodCells.push({ i, j, v, t, g, sg, front: 0.5*fChl + 0.5*fSst,
+        coolSide: t!=null && !isNaN(t) && !isNaN(sstMed) && t < sstMed });
     }
   }
-  // hot-spot = i fronti relativi piu' marcati (max 8); le altre celle produttive
-  // piu' ricche (max 16) restano come "acqua produttiva" verde. Niente tappeto.
-  prodCells.sort((a,b) => b.relG - a.relG);
+  // hot-spot = i FRONTI (termico + clorofilla) piu' marcati (max 8); le altre celle
+  // produttive (max 16) restano verdi. blu=lato freddo/oligotrofico, rosa=caldo/produttivo.
+  prodCells.sort((a,b) => b.front - a.front);
   const HOT_MAX = 8;
-  prodCells.forEach((c, idx) => c.hot = idx < HOT_MAX && (absMode ? c.g >= GRAD_FRONT : c.relG >= 0.15));
+  prodCells.forEach((c, idx) => c.hot = idx < HOT_MAX && c.front >= 0.15);
   const greens = prodCells.filter(c => !c.hot).sort((a,b) => b.v - a.v).slice(0, 16);
   const shown = prodCells.filter(c => c.hot).concat(greens);
   const nHot = shown.filter(c => c.hot).length;
@@ -1385,16 +1399,18 @@ async function computeFront(){
   shown.forEach(c => {
     if (c.hot){
       hotN++;
+      const col = c.coolSide ? '#1f6bff' : '#ff1493';
+      const guild = c.coolSide ? 'lato blu/freddo: alalunga/aguglia/spada' : 'lato produttivo/caldo: tonno di branco';
       L.marker([lats[c.i], lons[c.j]], { zIndexOffset:1000, icon: L.divIcon({
         className:'', iconSize:[30,30], iconAnchor:[15,15],
-        html:'<div style="width:26px;height:26px;border-radius:50%;background:#ff1493;'+
-          'border:3px solid #fff;box-shadow:0 0 5px #000,0 0 16px #ff1493;color:#fff;'+
+        html:'<div style="width:26px;height:26px;border-radius:50%;background:'+col+';'+
+          'border:3px solid #fff;box-shadow:0 0 5px #000,0 0 16px '+col+';color:#fff;'+
           'font:700 14px sans-serif;display:flex;align-items:center;justify-content:center;">'+hotN+'</div>'
       }) }).addTo(frontLayer).bindPopup(
-        '<b style="color:#ff1493;font-size:14px;">HOT-SPOT PELAGICI #'+hotN+'</b><br>'+
-        'Clorofilla: '+c.v.toPrecision(3)+' mg/m&sup3;<br>'+
-        'Gradiente: '+c.g.toPrecision(2)+' mg/m&sup3; ('+Math.round(c.relG*100)+'% vs mediana)'+
-        '<br><small>Massimo relativo su fronte: qui si concentra il foraggio e cacciano i pelagici.</small>');
+        '<b style="color:'+col+';font-size:14px;">FRONTE PELAGICO #'+hotN+'</b><br><b>'+guild+'</b><br>'+
+        'Clorofilla: '+c.v.toPrecision(3)+' mg/m&sup3; (fronte)<br>'+
+        'SST: '+(c.t==null||isNaN(c.t)?'n/d':c.t.toFixed(1)+' &deg;C')+'<br>'+
+        '<small>Scouting: incrocio fronte termico + clorofilla. NON validato su catture.</small>');
     } else {
       L.circleMarker([lats[c.i], lons[c.j]], {
         radius:5, color:'#ffffff', weight:1.5, fillColor:'#19e36a', fillOpacity:0.9
@@ -1404,12 +1420,10 @@ async function computeFront(){
         '<br><small>Acqua piu ricca della media locale.</small>');
     }
   });
-  frontInfo.innerHTML = '<span style="color:#ff2bd6">' + nHot + ' hot-spot pelagici</span> &middot; ' +
-    '<span style="color:#27c46b">' + greens.length + ' acqua produttiva</span> &middot; ' +
-    frontSegments.length + ' segmenti fronte<br>' +
-    '<small>Vista: ' + valid[0].toPrecision(2) + '&ndash;' + valid[valid.length-1].toPrecision(2) +
-    ' mg/m&sup3; &middot; mediana ' + med.toPrecision(2) + ' &middot; modo ' +
-    (absMode ? 'assoluto' : 'relativo (oligotrofico)') + '</small>';
+  frontInfo.innerHTML = '<span style="color:#ff1493">' + nHot + ' fronti pelagici</span> &middot; ' +
+    '<span style="color:#27c46b">' + greens.length + ' acqua produttiva</span><br>' +
+    '<small>SCOUTING fronti (SST + clorofilla): blu=freddo/oligotrofico (alalunga), rosa=caldo/produttivo (branco). ' +
+    'NON validato su catture - per quello usa l\'app Gara. Chl vista ' + valid[0].toPrecision(2) + '&ndash;' + valid[valid.length-1].toPrecision(2) + ' mg/m&sup3;.</small>';
 }
 frontBtn.addEventListener('click', computeFront);
 // Primo calcolo automatico degli hot-spot all'avvio (cosi' i punti si vedono subito)
