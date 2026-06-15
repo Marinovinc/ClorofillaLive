@@ -1322,7 +1322,10 @@ function marchingSquares(val, lats, lons, thr){
 }
 
 async function computeFront(){
-  const key = sel.value, p = PRODUCTS[key];
+  // Scouting pelagico: campiona sempre su un prodotto a COPERTURA PIENA (MED_L4 gapfree).
+  // Il prodotto visualizzato puo' essere costiero (HR, niente dato al largo) o PACE
+  // (senza lettura puntuale) e lascerebbe la vista vuota.
+  const key = PRODUCTS.MED_L4 ? 'MED_L4' : sel.value, p = PRODUCTS[key];
   if (!p.point){ frontInfo.textContent = 'Il fronte richiede un prodotto Mediterraneo (la sorgente PACE non da il valore puntuale).'; return; }
   const b = map.getBounds(), N = 11;   // modalita' pelagica: campiona chl + SST (2 chiamate/cella)
   const lats = [], lons = [];
