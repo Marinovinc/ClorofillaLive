@@ -835,7 +835,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <span id="bathyOpacityVal" style="font-size:11px; color:#9fb0c8; min-width:34px; text-align:right;">95%</span>
   </div>
   <div class="chkrow">
-    <input type="checkbox" id="isoChk">
+    <input type="checkbox" id="isoChk" checked>
     <label for="isoChk">Isobate (linee di profondit&agrave;)</label>
   </div>
   <div id="hillCtrls" style="display:none; margin-top:4px;">
@@ -1109,6 +1109,7 @@ const isoLayer = L.tileLayer.wms('https://ows.emodnet-bathymetry.eu/wms', {
 document.getElementById('isoChk').addEventListener('change', e => {
   if (e.target.checked) isoLayer.addTo(map); else map.removeLayer(isoLayer);
 });
+if (document.getElementById('isoChk').checked) isoLayer.addTo(map);   // isobate visibili gia' all'apertura
 // Slider: attenua il fondale (colori, rilievo GEBCO o rilievo HR)
 const bathyOp = document.getElementById('bathyOpacity');
 bathyOp.addEventListener('input', e => {
@@ -1128,6 +1129,8 @@ chlBoostEl.addEventListener('input', applyChlBoost);
 applyChlBoost();
 
 const baseLayers = {
+  'Grigio (CartoDB)': L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    { attribution:'&copy; OpenStreetMap, &copy; CARTO', maxZoom:20, maxNativeZoom:20, detectRetina:true }),
   'Satellite (ESRI)': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     { attribution:'&copy; Esri, Maxar, Earthstar Geographics', maxZoom:19, maxNativeZoom:19 }),
   'Scuro (CartoDB)': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
@@ -1135,7 +1138,7 @@ const baseLayers = {
   'OpenStreetMap': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     { attribution:'&copy; OpenStreetMap', maxZoom:19, maxNativeZoom:19 })
 };
-baseLayers['Satellite (ESRI)'].addTo(map);   // satellite di default: isola nitida zoomando
+baseLayers['Grigio (CartoDB)'].addTo(map);   // sfondo grigio neutro di default: isobate e clorofilla risaltano
 L.control.layers(baseLayers, null, { position:'topright', collapsed:true }).addTo(map);
 
 // === OVERLAY CLOROFILLA + SST ===
