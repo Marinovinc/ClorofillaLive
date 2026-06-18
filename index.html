@@ -1031,7 +1031,7 @@ async function updateHillshade(){
       dzdx*=zf; dzdy*=zf;
       const slope=Math.atan(Math.sqrt(dzdx*dzdx+dzdy*dzdy)), aspect=Math.atan2(dzdy,-dzdx);
       let hs=Math.cos(alt)*Math.cos(slope)+Math.sin(alt)*Math.sin(slope)*Math.cos(az-aspect); hs=hs<0?0:hs;
-      const gray=Math.round(35+hs*205), cur=A[y*gw+x], land=!ok(cur)||cur>0, o=(y*gw+x)*4;
+      const gray=Math.round(110+hs*145), cur=A[y*gw+x], land=!ok(cur)||cur>0, o=(y*gw+x)*4;
       out.data[o]=gray; out.data[o+1]=gray; out.data[o+2]=gray; out.data[o+3]=land?0:240;
     }
     ctx.putImageData(out,0,0); if (tok !== hillToken) return;
