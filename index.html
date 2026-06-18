@@ -1452,6 +1452,15 @@ async function computeFront(){
   const sstValid = sstFlat.filter(v => v!=null && !isNaN(v)).sort((a,b)=>a-b);
   const sstMed = sstValid.length ? sstValid[Math.floor(sstValid.length/2)] : NaN;
 
+  // === FONDALE: profondita' EMODnet sulla stessa griglia (filtro >200 m + drop-off/scarpate) ===
+  let doneD = 0;
+  const depFlat = await pool(cells, 8, async ([i,j]) => {
+    const dpt = await depthAt(lats[i], lons[j]);
+    frontInfo.textContent = 'Profondita fondale... ' + (++doneD) + '/' + cells.length;
+    return dpt;
+  });
+  const depVal = Array.from({length:N}, (_,i) => depFlat.slice(i*N, i*N+N));
+
   frontSegments = marchingSquares(val, lats, lons, thr);
   frontLayer.clearLayers();
   // Le isolinee del fronte NON vengono piu' disegnate: creavano un reticolo magenta
@@ -1469,29 +1478,27 @@ async function computeFront(){
   function gradAt(V,i,j){ const v=V[i][j]; if(v==null||isNaN(v)) return 0; let g=0;
     [[i-1,j],[i+1,j],[i,j-1],[i,j+1]].forEach(([a,b])=>{ if(a>=0&&a<N&&b>=0&&b<N&&V[a][b]!=null&&!isNaN(V[a][b])) g=Math.max(g,Math.abs(v-V[a][b])); }); return g; }
   let sstGmax=0; for(let i=0;i<N;i++)for(let j=0;j<N;j++){ const sg=gradAt(sstVal,i,j); if(sg>sstGmax) sstGmax=sg; }
-  let prodCells = [];
+  const MIN_DEPTH = -200;   // tieni solo fondale piu' profondo di 200 m (Depth EMODnet, neg=sotto il mare)
+  let depGmax=0; for(let i=0;i<N;i++)for(let j=0;j<N;j++){ if(depVal[i][j]!=null && depVal[i][j]<=MIN_DEPTH){ const dg=gradAt(depVal,i,j); if(dg>depGmax) depGmax=dg; } }
+  let prodCells = [], nShallow = 0;
   for (let i = 0; i < N; i++){
     for (let j = 0; j < N; j++){
       const v = val[i][j];
       if (isNaN(v)) continue;
       const productive = absMode ? (v >= CHL_FORAGE_LO && v <= CHL_FORAGE_HI) : (v >= p75);
       if (!productive) continue;
+      const dpt = depVal[i][j];
+      if (dpt != null && dpt > MIN_DEPTH){ nShallow++; continue; }   // troppo basso/costiero -> escluso
       const g = gradAt(val,i,j), sg = gradAt(sstVal,i,j), t = sstVal[i][j];
       const fChl = med>0 ? Math.min(1,(g/med)/0.5) : 0;        // fronte clorofilla normalizzato
       const fSst = sstGmax>0 ? sg/sstGmax : 0;                 // fronte termico normalizzato
-      prodCells.push({ i, j, v, t, g, sg, front: 0.5*fChl + 0.5*fSst,
+      const dg = gradAt(depVal,i,j), fDrop = depGmax>0 ? Math.min(1, dg/depGmax) : 0;   // drop-off/scarpata
+      prodCells.push({ i, j, v, t, depth:dpt, g, sg, dg, fDrop,
+        front: 0.5*fChl + 0.5*fSst,
+        score: 0.38*fChl + 0.22*fSst + 0.40*fDrop,            // hotspot = fronte + DROP-OFF premiato
         coolSide: t!=null && !isNaN(t) && !isNaN(sstMed) && t < sstMed });
     }
   }
-  // === FILTRO PROFONDITA' (>200 m): i grandi pelagici stanno in acqua profonda offshore ===
-  const MIN_DEPTH = -200;   // Depth EMODnet: negativo = sotto il mare; tieni solo cale piu' profonde di 200 m
-  let doneD = 0;
-  await pool(prodCells, 8, async (c) => {
-    c.depth = await depthAt(lats[c.i], lons[c.j]);
-    frontInfo.textContent = 'Profondita fondale... ' + (++doneD) + '/' + prodCells.length;
-  });
-  const nShallow = prodCells.filter(c => c.depth != null && c.depth > MIN_DEPTH).length;
-  prodCells = prodCells.filter(c => c.depth == null || c.depth <= MIN_DEPTH);
   if (!prodCells.length){
     frontLayer.clearLayers();
     frontInfo.innerHTML = '<b>Nessun punto pelagico qui.</b><br><small>In questa vista il fondale &egrave; basso/costiero (sotto i 200 m). Sposta la mappa al largo, sulle scarpate / sul profondo.</small>';
@@ -1499,9 +1506,9 @@ async function computeFront(){
   }
   // hot-spot = i FRONTI (termico + clorofilla) piu' marcati (max 8); le altre celle
   // produttive (max 16) restano verdi. blu=lato freddo/oligotrofico, rosa=caldo/produttivo.
-  prodCells.sort((a,b) => b.front - a.front);
+  prodCells.sort((a,b) => b.score - a.score);
   const HOT_MAX = 8;
-  prodCells.forEach((c, idx) => c.hot = idx < HOT_MAX && c.front >= 0.15);
+  prodCells.forEach((c, idx) => c.hot = idx < HOT_MAX && c.score >= 0.15);
   const greens = prodCells.filter(c => !c.hot).sort((a,b) => b.v - a.v).slice(0, 16);
   const shown = prodCells.filter(c => c.hot).concat(greens);
   const nHot = shown.filter(c => c.hot).length;
@@ -1520,8 +1527,8 @@ async function computeFront(){
         '<b style="color:'+col+';font-size:14px;">FRONTE PELAGICO #'+hotN+'</b><br><b>'+guild+'</b><br>'+
         'Clorofilla: '+c.v.toPrecision(3)+' mg/m&sup3; (fronte)<br>'+
         'SST: '+(c.t==null||isNaN(c.t)?'n/d':c.t.toFixed(1)+' &deg;C')+'<br>'+
-        'Fondale: '+(c.depth==null?'n/d':Math.round(-c.depth)+' m')+'<br>'+
-        '<small>Scouting: fronte termico + clorofilla, fondale &gt;200 m. NON validato su catture.</small>');
+        'Fondale: '+(c.depth==null?'n/d':Math.round(-c.depth)+' m')+(c.fDrop>=0.5?' &middot; <b>drop-off marcato</b>':(c.fDrop>=0.25?' &middot; scarpata':''))+'<br>'+
+        '<small>Scouting: fronte termico + clorofilla + drop-off, fondale &gt;200 m. NON validato su catture.</small>');
     } else {
       L.circleMarker([lats[c.i], lons[c.j]], {
         radius:5, color:'#ffffff', weight:1.5, fillColor:'#19e36a', fillOpacity:0.9
@@ -1534,7 +1541,7 @@ async function computeFront(){
   });
   frontInfo.innerHTML = '<span style="color:#ff1493">' + nHot + ' fronti pelagici</span> &middot; ' +
     '<span style="color:#27c46b">' + greens.length + ' acqua produttiva</span><br>' +
-    '<small>Solo fondale &gt;200 m (esclusi ' + nShallow + ' punti su acqua bassa/costiera). ' +
+    '<small>Solo fondale &gt;200 m (esclusi ' + nShallow + ' punti su acqua bassa/costiera), drop-off/scarpate premiati. ' +
     'Fronti SST+clorofilla: blu=freddo/oligotrofico (alalunga), rosa=caldo/produttivo (branco). ' +
     'NON validato su catture - per quello usa l\'app Gara. Chl vista ' + valid[0].toPrecision(2) + '&ndash;' + valid[valid.length-1].toPrecision(2) + ' mg/m&sup3;.</small>';
 }
