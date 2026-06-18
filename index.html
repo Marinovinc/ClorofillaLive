@@ -847,6 +847,22 @@ svg.leaflet-image-layer.leaflet-interactive path {
       <span style="font-size:11px; color:#9fb0c8; white-space:nowrap; min-width:62px;">Intensit&agrave;</span>
       <input type="range" id="hillExag" min="1" max="9" step="0.5" value="4" style="flex:1;">
     </div>
+    <div class="chkrow" style="margin-top:6px;">
+      <input type="checkbox" id="bandChk" checked>
+      <label for="bandChk">Banda quota colorata (come Pezzogna)</label>
+    </div>
+    <div id="bandCtrls">
+      <div class="row" style="align-items:center; gap:8px; margin-top:3px;">
+        <span style="font-size:11px; color:#9fb0c8; white-space:nowrap; min-width:62px;">Da (m)</span>
+        <input type="range" id="bandMin" min="0" max="1400" step="25" value="300" style="flex:1;">
+        <span id="bandMinVal" style="font-size:11px; color:#9fb0c8; min-width:42px; text-align:right;">300</span>
+      </div>
+      <div class="row" style="align-items:center; gap:8px; margin-top:3px;">
+        <span style="font-size:11px; color:#9fb0c8; white-space:nowrap; min-width:62px;">A (m)</span>
+        <input type="range" id="bandMax" min="50" max="1500" step="25" value="500" style="flex:1;">
+        <span id="bandMaxVal" style="font-size:11px; color:#9fb0c8; min-width:42px; text-align:right;">500</span>
+      </div>
+    </div>
   </div>
   <div class="desc" id="hillInfo" style="display:none;"></div>
   <div class="chkrow">
@@ -1009,6 +1025,10 @@ function ensureGeoTIFF(){
   return geotiffLoad;
 }
 // Cache del grigliato per ri-render veloce con gli slider (senza riscaricare)
+// colormap turbo (profondita' 0..1 -> blu/viola -> verde -> giallo -> rosso), come la colorbar del documento Pezzogna
+const TURBO=[[48,18,59],[70,107,227],[36,168,243],[30,219,170],[142,240,52],[232,191,32],[247,108,29],[165,18,20]];
+function turbo(t){ t=t<0?0:t>1?1:t; const s=t*(TURBO.length-1), i=Math.floor(s), f=s-i, a=TURBO[i], b=TURBO[Math.min(i+1,TURBO.length-1)];
+  return [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f]; }
 let hillGrid = null;
 function renderHillshade(){
   if (!hillGrid || bathyMode() !== 'rilievohr') return;
@@ -1017,6 +1037,11 @@ function renderHillshade(){
   const pxLon=(bb[2]-bb[0])/gw*111320*Math.cos(midLat*Math.PI/180), pxLat=(bb[3]-bb[1])/gh*111320;
   const zf=+document.getElementById('hillExag').value;                        // INTENSITA' rilievo (esagerazione)
   const base=30+(+document.getElementById('hillBright').value)/100*180;       // LUMINOSITA' (base grigio 30..210)
+  // banda quota colorata sottile (solo la fascia d'interesse, es. 300-500 m), il resto resta grigio
+  const bandOn=document.getElementById('bandChk').checked;
+  let d1=+document.getElementById('bandMin').value, d2=+document.getElementById('bandMax').value;
+  if (d2<d1){ const t=d1; d1=d2; d2=t; }
+  const span=Math.max(1, d2-d1), BA=0.62;
   const az=315*Math.PI/180, alt=45*Math.PI/180;
   const cv=document.createElement('canvas'); cv.width=gw; cv.height=gh;
   const ctx=cv.getContext('2d'), out=ctx.createImageData(gw,gh);
@@ -1031,7 +1056,10 @@ function renderHillshade(){
     let hs=Math.cos(alt)*Math.cos(slope)+Math.sin(alt)*Math.sin(slope)*Math.cos(az-aspect); hs=hs<0?0:hs;
     hs=0.38+0.62*hs;   // luce ambiente: le ombre non vanno mai a nero, il fondale resta sempre visibile
     const gray=Math.round(base+hs*(255-base)), cur=A[y*gw+x], land=!ok(cur)||cur>0, o=(y*gw+x)*4;
-    out.data[o]=gray; out.data[o+1]=gray; out.data[o+2]=gray; out.data[o+3]=land?0:240;
+    let r=gray, gg=gray, bl=gray;
+    if (bandOn && !land){ const depth=-cur; if (depth>=d1 && depth<=d2){ const col=turbo((depth-d1)/span);
+      r=gray*(1-BA)+col[0]*BA; gg=gray*(1-BA)+col[1]*BA; bl=gray*(1-BA)+col[2]*BA; } }
+    out.data[o]=r; out.data[o+1]=gg; out.data[o+2]=bl; out.data[o+3]=land?0:240;
   }
   ctx.putImageData(out,0,0);
   if (hillOverlay) map.removeLayer(hillOverlay);
@@ -1064,7 +1092,11 @@ async function updateHillshade(){
   } catch(err){ hillNote('Rilievo HR non disponibile qui (' + (err.message||err) + ').'); }
 }
 // gli slider regolano il rilievo all'istante (ri-render dalla cache, senza riscaricare)
-['hillBright','hillExag'].forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('input', renderHillshade); });
+['hillBright','hillExag','bandMin','bandMax'].forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('input', renderHillshade); });
+['bandMin','bandMax'].forEach(id=>{ const el=document.getElementById(id), out=document.getElementById(id+'Val'); if(el&&out) el.addEventListener('input', ()=>{ out.textContent=el.value; }); });
+(function(){ const ch=document.getElementById('bandChk'), bc=document.getElementById('bandCtrls');
+  function sync(){ if(bc) bc.style.display=ch.checked?'block':'none'; renderHillshade(); }
+  if(ch){ ch.addEventListener('change', sync); if(bc) bc.style.display=ch.checked?'block':'none'; } })();
 map.on('moveend', () => { if (bathyMode() === 'rilievohr') updateHillshade(); });
 refreshBathy();
 
