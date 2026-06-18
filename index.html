@@ -1401,6 +1401,19 @@ function marchingSquares(val, lats, lons, thr){
   return segs;
 }
 
+// Profondita' fondale (EMODnet WMS GetFeatureInfo, layer emodnet:mean). Depth negativo = sotto il mare.
+async function depthAt(lat, lon){
+  const dd = 0.004;
+  const url = 'https://ows.emodnet-bathymetry.eu/wms?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetFeatureInfo'
+    + '&LAYERS=emodnet:mean&QUERY_LAYERS=emodnet:mean&SRS=EPSG:4326'
+    + '&BBOX=' + (lon-dd) + ',' + (lat-dd) + ',' + (lon+dd) + ',' + (lat+dd)
+    + '&WIDTH=101&HEIGHT=101&X=50&Y=50&INFO_FORMAT=text/plain';
+  try {
+    const t = await (await fetch(url)).text();
+    const m = t.match(/Depth\s*=\s*(-?\d+(?:\.\d+)?)/);
+    return m ? parseFloat(m[1]) : null;
+  } catch(e){ return null; }
+}
 async function computeFront(){
   // Scouting pelagico: campiona sempre su un prodotto a COPERTURA PIENA (MED_L4 gapfree).
   // Il prodotto visualizzato puo' essere costiero (HR, niente dato al largo) o PACE
@@ -1456,7 +1469,7 @@ async function computeFront(){
   function gradAt(V,i,j){ const v=V[i][j]; if(v==null||isNaN(v)) return 0; let g=0;
     [[i-1,j],[i+1,j],[i,j-1],[i,j+1]].forEach(([a,b])=>{ if(a>=0&&a<N&&b>=0&&b<N&&V[a][b]!=null&&!isNaN(V[a][b])) g=Math.max(g,Math.abs(v-V[a][b])); }); return g; }
   let sstGmax=0; for(let i=0;i<N;i++)for(let j=0;j<N;j++){ const sg=gradAt(sstVal,i,j); if(sg>sstGmax) sstGmax=sg; }
-  const prodCells = [];
+  let prodCells = [];
   for (let i = 0; i < N; i++){
     for (let j = 0; j < N; j++){
       const v = val[i][j];
@@ -1469,6 +1482,20 @@ async function computeFront(){
       prodCells.push({ i, j, v, t, g, sg, front: 0.5*fChl + 0.5*fSst,
         coolSide: t!=null && !isNaN(t) && !isNaN(sstMed) && t < sstMed });
     }
+  }
+  // === FILTRO PROFONDITA' (>200 m): i grandi pelagici stanno in acqua profonda offshore ===
+  const MIN_DEPTH = -200;   // Depth EMODnet: negativo = sotto il mare; tieni solo cale piu' profonde di 200 m
+  let doneD = 0;
+  await pool(prodCells, 8, async (c) => {
+    c.depth = await depthAt(lats[c.i], lons[c.j]);
+    frontInfo.textContent = 'Profondita fondale... ' + (++doneD) + '/' + prodCells.length;
+  });
+  const nShallow = prodCells.filter(c => c.depth != null && c.depth > MIN_DEPTH).length;
+  prodCells = prodCells.filter(c => c.depth == null || c.depth <= MIN_DEPTH);
+  if (!prodCells.length){
+    frontLayer.clearLayers();
+    frontInfo.innerHTML = '<b>Nessun punto pelagico qui.</b><br><small>In questa vista il fondale &egrave; basso/costiero (sotto i 200 m). Sposta la mappa al largo, sulle scarpate / sul profondo.</small>';
+    return;
   }
   // hot-spot = i FRONTI (termico + clorofilla) piu' marcati (max 8); le altre celle
   // produttive (max 16) restano verdi. blu=lato freddo/oligotrofico, rosa=caldo/produttivo.
@@ -1493,19 +1520,22 @@ async function computeFront(){
         '<b style="color:'+col+';font-size:14px;">FRONTE PELAGICO #'+hotN+'</b><br><b>'+guild+'</b><br>'+
         'Clorofilla: '+c.v.toPrecision(3)+' mg/m&sup3; (fronte)<br>'+
         'SST: '+(c.t==null||isNaN(c.t)?'n/d':c.t.toFixed(1)+' &deg;C')+'<br>'+
-        '<small>Scouting: incrocio fronte termico + clorofilla. NON validato su catture.</small>');
+        'Fondale: '+(c.depth==null?'n/d':Math.round(-c.depth)+' m')+'<br>'+
+        '<small>Scouting: fronte termico + clorofilla, fondale &gt;200 m. NON validato su catture.</small>');
     } else {
       L.circleMarker([lats[c.i], lons[c.j]], {
         radius:5, color:'#ffffff', weight:1.5, fillColor:'#19e36a', fillOpacity:0.9
       }).addTo(frontLayer).bindPopup(
         '<b style="color:#13a04f">Acqua produttiva</b><br>'+
         'Clorofilla: '+c.v.toPrecision(3)+' mg/m&sup3;'+
-        '<br><small>Acqua piu ricca della media locale.</small>');
+        '<br>Fondale: '+(c.depth==null?'n/d':Math.round(-c.depth)+' m')+
+        '<br><small>Acqua piu ricca della media locale, fondale &gt;200 m.</small>');
     }
   });
   frontInfo.innerHTML = '<span style="color:#ff1493">' + nHot + ' fronti pelagici</span> &middot; ' +
     '<span style="color:#27c46b">' + greens.length + ' acqua produttiva</span><br>' +
-    '<small>SCOUTING fronti (SST + clorofilla): blu=freddo/oligotrofico (alalunga), rosa=caldo/produttivo (branco). ' +
+    '<small>Solo fondale &gt;200 m (esclusi ' + nShallow + ' punti su acqua bassa/costiera). ' +
+    'Fronti SST+clorofilla: blu=freddo/oligotrofico (alalunga), rosa=caldo/produttivo (branco). ' +
     'NON validato su catture - per quello usa l\'app Gara. Chl vista ' + valid[0].toPrecision(2) + '&ndash;' + valid[valid.length-1].toPrecision(2) + ' mg/m&sup3;.</small>';
 }
 frontBtn.addEventListener('click', computeFront);
