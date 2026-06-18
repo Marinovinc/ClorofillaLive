@@ -838,6 +838,16 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <input type="checkbox" id="isoChk">
     <label for="isoChk">Isobate (linee di profondit&agrave;)</label>
   </div>
+  <div id="hillCtrls" style="display:none; margin-top:4px;">
+    <div class="row" style="align-items:center; gap:8px;">
+      <span style="font-size:11px; color:#9fb0c8; white-space:nowrap; min-width:62px;">Luminosit&agrave;</span>
+      <input type="range" id="hillBright" min="0" max="100" step="5" value="45" style="flex:1;">
+    </div>
+    <div class="row" style="align-items:center; gap:8px; margin-top:3px;">
+      <span style="font-size:11px; color:#9fb0c8; white-space:nowrap; min-width:62px;">Intensit&agrave;</span>
+      <input type="range" id="hillExag" min="1" max="9" step="0.5" value="4" style="flex:1;">
+    </div>
+  </div>
   <div class="desc" id="hillInfo" style="display:none;"></div>
   <div class="chkrow">
     <input type="checkbox" id="sstChk">
@@ -977,6 +987,7 @@ function bathyMode(){ return document.getElementById('bathyMode').value; }
 function hillNote(t){ const el=document.getElementById('hillInfo'); if(!el)return; el.textContent=t||''; el.style.display=t?'block':'none'; }
 function refreshBathy(){
   const mode = bathyMode();
+  const hc=document.getElementById('hillCtrls'); if(hc) hc.style.display = (mode==='rilievohr')?'block':'none';
   map.removeLayer(bathyLayer); map.removeLayer(reliefLayer);
   if (mode !== 'rilievohr'){ if(hillOverlay){ map.removeLayer(hillOverlay); hillOverlay=null; } hillNote(''); }
   if (mode === 'colori'){ bathyLayer.setOpacity(bathyOpac()); bathyLayer.addTo(map); }
@@ -997,17 +1008,46 @@ function ensureGeoTIFF(){
   });
   return geotiffLoad;
 }
-// Hillshade calcolato dal grigliato EMODnet (WCS GeoTIFF) per la vista corrente
+// Cache del grigliato per ri-render veloce con gli slider (senza riscaricare)
+let hillGrid = null;
+function renderHillshade(){
+  if (!hillGrid || bathyMode() !== 'rilievohr') return;
+  const A=hillGrid.A, gw=hillGrid.gw, gh=hillGrid.gh, bb=hillGrid.bb;
+  const midLat=(bb[1]+bb[3])/2;
+  const pxLon=(bb[2]-bb[0])/gw*111320*Math.cos(midLat*Math.PI/180), pxLat=(bb[3]-bb[1])/gh*111320;
+  const zf=+document.getElementById('hillExag').value;                        // INTENSITA' rilievo (esagerazione)
+  const base=30+(+document.getElementById('hillBright').value)/100*180;       // LUMINOSITA' (base grigio 30..210)
+  const az=315*Math.PI/180, alt=45*Math.PI/180;
+  const cv=document.createElement('canvas'); cv.width=gw; cv.height=gh;
+  const ctx=cv.getContext('2d'), out=ctx.createImageData(gw,gh);
+  const ok=v=>(v>-12000&&v<9000);
+  const el=(x,y)=>{ x=x<0?0:(x>=gw?gw-1:x); y=y<0?0:(y>=gh?gh-1:y); const v=A[y*gw+x]; return ok(v)?v:NaN; };
+  for (let y=0;y<gh;y++) for (let x=0;x<gw;x++){
+    const a=el(x-1,y-1),b=el(x,y-1),c=el(x+1,y-1),d=el(x-1,y),f=el(x+1,y),g=el(x-1,y+1),hh=el(x,y+1),ii=el(x+1,y+1);
+    let dzdx=((c+2*f+ii)-(a+2*d+g))/(8*pxLon), dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*pxLat);
+    if (!isFinite(dzdx)||!isFinite(dzdy)){ dzdx=0; dzdy=0; }
+    dzdx*=zf; dzdy*=zf;
+    const slope=Math.atan(Math.sqrt(dzdx*dzdx+dzdy*dzdy)), aspect=Math.atan2(dzdy,-dzdx);
+    let hs=Math.cos(alt)*Math.cos(slope)+Math.sin(alt)*Math.sin(slope)*Math.cos(az-aspect); hs=hs<0?0:hs;
+    const gray=Math.round(base+hs*(255-base)), cur=A[y*gw+x], land=!ok(cur)||cur>0, o=(y*gw+x)*4;
+    out.data[o]=gray; out.data[o+1]=gray; out.data[o+2]=gray; out.data[o+3]=land?0:240;
+  }
+  ctx.putImageData(out,0,0);
+  if (hillOverlay) map.removeLayer(hillOverlay);
+  hillOverlay=L.imageOverlay(cv.toDataURL('image/png'), [[bb[1],bb[0]],[bb[3],bb[2]]], { opacity:bathyOpac(), pane:'bathyPane', interactive:false });
+  hillOverlay.addTo(map);
+}
+// Scarica il grigliato EMODnet (WCS) per la vista, poi disegna l'hillshade
 async function updateHillshade(){
   if (bathyMode() !== 'rilievohr') return;
-  if (map.getZoom() < 9){ if(hillOverlay){map.removeLayer(hillOverlay);hillOverlay=null;} hillNote('Zoom in (livello 9+) per il rilievo HR EMODnet.'); return; }
+  if (map.getZoom() < 9){ if(hillOverlay){map.removeLayer(hillOverlay);hillOverlay=null;} hillGrid=null; hillNote('Zoom in (livello 9+) per il rilievo HR EMODnet.'); return; }
   const tok = ++hillToken; hillNote('Calcolo rilievo EMODnet...');
   try {
     await ensureGeoTIFF(); if (tok !== hillToken) return;
     const bn=map.getBounds(), s=bn.getSouth(), n=bn.getNorth(), w=bn.getWest(), e=bn.getEast();
     const midLat0=(s+n)/2;
-    const estW=(e-w)*111320*Math.cos(midLat0*Math.PI/180)/100, estH=(n-s)*111320/100;  // px nativi stimati (~100 m)
-    const sf=Math.min(1, 760/Math.max(estW, estH, 1));                                  // cap lato lungo ~760 px
+    const estW=(e-w)*111320*Math.cos(midLat0*Math.PI/180)/100, estH=(n-s)*111320/100;
+    const sf=Math.min(1, 760/Math.max(estW, estH, 1));
     const url = 'https://ows.emodnet-bathymetry.eu/wcs?service=WCS&version=2.0.1&request=GetCoverage'
       + '&coverageId=emodnet__mean&format=image/tiff'
       + '&subset=Lat(' + s.toFixed(5) + ',' + n.toFixed(5) + ')&subset=Long(' + w.toFixed(5) + ',' + e.toFixed(5) + ')'
@@ -1016,31 +1056,14 @@ async function updateHillshade(){
     const img = await (await GeoTIFF.fromArrayBuffer(ab)).getImage();
     const gw = img.getWidth(), gh = img.getHeight();
     if (gw*gh > 800000){ hillNote('Area troppo grande: zoom in per il rilievo HR.'); return; }
-    const A = (await img.readRasters())[0], bb = img.getBoundingBox();   // [minLon,minLat,maxLon,maxLat]
-    const midLat=(bb[1]+bb[3])/2;
-    const pxLon=(bb[2]-bb[0])/gw*111320*Math.cos(midLat*Math.PI/180), pxLat=(bb[3]-bb[1])/gh*111320;
-    const az=315*Math.PI/180, alt=45*Math.PI/180, zf=4.0;
-    const cv=document.createElement('canvas'); cv.width=gw; cv.height=gh;
-    const ctx=cv.getContext('2d'), out=ctx.createImageData(gw,gh);
-    const ok=v=>(v>-12000&&v<9000);
-    const el=(x,y)=>{ x=x<0?0:(x>=gw?gw-1:x); y=y<0?0:(y>=gh?gh-1:y); const v=A[y*gw+x]; return ok(v)?v:NaN; };
-    for (let y=0;y<gh;y++) for (let x=0;x<gw;x++){
-      const a=el(x-1,y-1),b=el(x,y-1),c=el(x+1,y-1),d=el(x-1,y),f=el(x+1,y),g=el(x-1,y+1),hh=el(x,y+1),ii=el(x+1,y+1);
-      let dzdx=((c+2*f+ii)-(a+2*d+g))/(8*pxLon), dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*pxLat);
-      if (!isFinite(dzdx)||!isFinite(dzdy)){ dzdx=0; dzdy=0; }
-      dzdx*=zf; dzdy*=zf;
-      const slope=Math.atan(Math.sqrt(dzdx*dzdx+dzdy*dzdy)), aspect=Math.atan2(dzdy,-dzdx);
-      let hs=Math.cos(alt)*Math.cos(slope)+Math.sin(alt)*Math.sin(slope)*Math.cos(az-aspect); hs=hs<0?0:hs;
-      const gray=Math.round(110+hs*145), cur=A[y*gw+x], land=!ok(cur)||cur>0, o=(y*gw+x)*4;
-      out.data[o]=gray; out.data[o+1]=gray; out.data[o+2]=gray; out.data[o+3]=land?0:240;
-    }
-    ctx.putImageData(out,0,0); if (tok !== hillToken) return;
-    if (hillOverlay) map.removeLayer(hillOverlay);
-    hillOverlay = L.imageOverlay(cv.toDataURL('image/png'), [[bb[1],bb[0]],[bb[3],bb[2]]], { opacity:bathyOpac(), pane:'bathyPane', interactive:false });
-    hillOverlay.addTo(map);
-    hillNote('Rilievo EMODnet ' + gw + '×' + gh + ' (~115 m). Pan/zoom per ricalcolare.');
+    const A = (await img.readRasters())[0], bb = img.getBoundingBox(); if (tok !== hillToken) return;
+    hillGrid = {A:A, gw:gw, gh:gh, bb:bb};
+    renderHillshade();
+    hillNote('Rilievo EMODnet ' + gw + '×' + gh + ' (~115 m). Pan/zoom per ricalcolare; slider per regolare.');
   } catch(err){ hillNote('Rilievo HR non disponibile qui (' + (err.message||err) + ').'); }
 }
+// gli slider regolano il rilievo all'istante (ri-render dalla cache, senza riscaricare)
+['hillBright','hillExag'].forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('input', renderHillshade); });
 map.on('moveend', () => { if (bathyMode() === 'rilievohr') updateHillshade(); });
 refreshBathy();
 
