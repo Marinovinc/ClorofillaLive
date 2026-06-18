@@ -820,11 +820,15 @@ svg.leaflet-image-layer.leaflet-interactive path {
 
   <hr class="sep">
   <label>Strumenti avanzati</label>
-  <div class="chkrow">
-    <input type="checkbox" id="bathyChk" checked>
-    <label for="bathyChk">Fondale colorato (batimetria EMODnet)</label>
+  <div class="row" style="align-items:center; gap:8px;">
+    <label for="bathyMode" style="margin:0; white-space:nowrap;">Fondale</label>
+    <select id="bathyMode" style="flex:1;">
+      <option value="off">Nessuno</option>
+      <option value="colori" selected>Colori (profondit&agrave;)</option>
+      <option value="rilievo">Rilievo / strutture</option>
+    </select>
   </div>
-  <div class="row" style="align-items:center; gap:8px; margin:-2px 0 6px 22px;">
+  <div class="row" style="align-items:center; gap:8px; margin:4px 0 6px 0;">
     <span style="font-size:11px; color:#9fb0c8; white-space:nowrap;">Attenua</span>
     <input type="range" id="bathyOpacity" min="0" max="100" step="5" value="95" style="flex:1;">
     <span id="bathyOpacityVal" style="font-size:11px; color:#9fb0c8; min-width:34px; text-align:right;">95%</span>
@@ -956,31 +960,39 @@ map.getPane('chlPane').style.filter = 'brightness(1.2) saturate(1.3)';
 map.getPane('chlPane').style.pointerEvents = 'none';
 let chlOpacity = 0.6;   // regolata dallo slider "Trasparenza mare"
 
-// === FONDALE: batimetria EMODnet (fondale azzurro luminoso, qualsiasi zoom) ===
-// Copre il mare (trasparente sulla terraferma); resta nitida a tutti i livelli (WMS).
+// === FONDALE: Colori (EMODnet) oppure Rilievo/strutture (GEBCO hillshade) ===
 const bathyLayer = L.tileLayer.wms('https://ows.emodnet-bathymetry.eu/wms', {
   layers:'emodnet:mean_multicolour', format:'image/png', transparent:true,
   opacity:0.95, pane:'bathyPane', maxZoom:19, attribution:'&copy; EMODnet Bathymetry'
 });
+// GEBCO rilievo ombreggiato: il fondale come STRUTTURE (banchi, scarpate, canyon)
+const reliefLayer = L.tileLayer.wms('https://wms.gebco.net/mapserv', {
+  layers:'GEBCO_LATEST', version:'1.3.0', format:'image/png', transparent:true,
+  opacity:0.95, pane:'bathyPane', maxZoom:19, attribution:'&copy; GEBCO'
+});
+function bathyOpac(){ return (+document.getElementById('bathyOpacity').value)/100; }
 function refreshBathy(){
-  if (document.getElementById('bathyChk').checked) bathyLayer.addTo(map);
-  else map.removeLayer(bathyLayer);
+  const mode = document.getElementById('bathyMode').value;
+  map.removeLayer(bathyLayer); map.removeLayer(reliefLayer);
+  if (mode === 'colori'){ bathyLayer.setOpacity(bathyOpac()); bathyLayer.addTo(map); }
+  else if (mode === 'rilievo'){ reliefLayer.setOpacity(bathyOpac()); reliefLayer.addTo(map); }
 }
-document.getElementById('bathyChk').addEventListener('change', refreshBathy);
+document.getElementById('bathyMode').addEventListener('change', refreshBathy);
 refreshBathy();
 
-// === ISOBATE EMODnet (linee di profondita') - layer separato, attivabile ===
+// === ISOBATE EMODnet (linee di profondita') - pane dedicato sopra il fondale ===
+map.createPane('isoPane'); map.getPane('isoPane').style.zIndex = 270;
 const isoLayer = L.tileLayer.wms('https://ows.emodnet-bathymetry.eu/wms', {
   layers:'emodnet:contours', format:'image/png', transparent:true,
-  opacity:0.9, pane:'bathyPane', maxZoom:19, attribution:'&copy; EMODnet Bathymetry'
+  opacity:0.9, pane:'isoPane', maxZoom:19, attribution:'&copy; EMODnet Bathymetry'
 });
 document.getElementById('isoChk').addEventListener('change', e => {
   if (e.target.checked) isoLayer.addTo(map); else map.removeLayer(isoLayer);
 });
-// Slider: attenua il fondale colorato (opacita')
+// Slider: attenua il fondale (si applica al layer attivo: colori o rilievo)
 const bathyOp = document.getElementById('bathyOpacity');
 bathyOp.addEventListener('input', e => {
-  const v = +e.target.value; bathyLayer.setOpacity(v/100);
+  const v = +e.target.value; bathyLayer.setOpacity(v/100); reliefLayer.setOpacity(v/100);
   document.getElementById('bathyOpacityVal').textContent = v + '%';
 });
 // Slider: risalto clorofilla (filtro sul pane: piu' saturazione/contrasto/luminosita')
