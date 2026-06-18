@@ -793,6 +793,12 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <span id="opacityVal" style="font-size:11px; color:#9fb0c8; min-width:34px; text-align:right;">60%</span>
   </div>
 
+  <label for="chlBoost">Risalto clorofilla (colori piu' vividi)</label>
+  <div class="row" style="align-items:center; gap:8px;">
+    <input type="range" id="chlBoost" min="0" max="100" step="5" value="30" style="flex:1;">
+    <span id="chlBoostVal" style="font-size:11px; color:#9fb0c8; min-width:34px; text-align:right;">30%</span>
+  </div>
+
   <label for="dateSelect">Data del dato</label>
   <input type="date" id="dateSelect">
   <div class="quickdates" id="quickDates"></div>
@@ -816,7 +822,16 @@ svg.leaflet-image-layer.leaflet-interactive path {
   <label>Strumenti avanzati</label>
   <div class="chkrow">
     <input type="checkbox" id="bathyChk" checked>
-    <label for="bathyChk">Fondale luminoso (batimetria EMODnet)</label>
+    <label for="bathyChk">Fondale colorato (batimetria EMODnet)</label>
+  </div>
+  <div class="row" style="align-items:center; gap:8px; margin:-2px 0 6px 22px;">
+    <span style="font-size:11px; color:#9fb0c8; white-space:nowrap;">Attenua</span>
+    <input type="range" id="bathyOpacity" min="0" max="100" step="5" value="95" style="flex:1;">
+    <span id="bathyOpacityVal" style="font-size:11px; color:#9fb0c8; min-width:34px; text-align:right;">95%</span>
+  </div>
+  <div class="chkrow">
+    <input type="checkbox" id="isoChk">
+    <label for="isoChk">Isobate (linee di profondit&agrave;)</label>
   </div>
   <div class="chkrow">
     <input type="checkbox" id="sstChk">
@@ -953,6 +968,31 @@ function refreshBathy(){
 }
 document.getElementById('bathyChk').addEventListener('change', refreshBathy);
 refreshBathy();
+
+// === ISOBATE EMODnet (linee di profondita') - layer separato, attivabile ===
+const isoLayer = L.tileLayer.wms('https://ows.emodnet-bathymetry.eu/wms', {
+  layers:'emodnet:contours', format:'image/png', transparent:true,
+  opacity:0.9, pane:'bathyPane', maxZoom:19, attribution:'&copy; EMODnet Bathymetry'
+});
+document.getElementById('isoChk').addEventListener('change', e => {
+  if (e.target.checked) isoLayer.addTo(map); else map.removeLayer(isoLayer);
+});
+// Slider: attenua il fondale colorato (opacita')
+const bathyOp = document.getElementById('bathyOpacity');
+bathyOp.addEventListener('input', e => {
+  const v = +e.target.value; bathyLayer.setOpacity(v/100);
+  document.getElementById('bathyOpacityVal').textContent = v + '%';
+});
+// Slider: risalto clorofilla (filtro sul pane: piu' saturazione/contrasto/luminosita')
+const chlBoostEl = document.getElementById('chlBoost');
+function applyChlBoost(){
+  const bst = (+chlBoostEl.value)/100;
+  map.getPane('chlPane').style.filter =
+    'saturate(' + (1.3 + bst*1.7).toFixed(2) + ') contrast(' + (1.0 + bst*0.7).toFixed(2) + ') brightness(' + (1.15 + bst*0.25).toFixed(2) + ')';
+  document.getElementById('chlBoostVal').textContent = (+chlBoostEl.value) + '%';
+}
+chlBoostEl.addEventListener('input', applyChlBoost);
+applyChlBoost();
 
 const baseLayers = {
   'Satellite (ESRI)': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
