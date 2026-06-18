@@ -825,7 +825,8 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <select id="bathyMode" style="flex:1;">
       <option value="off">Nessuno</option>
       <option value="colori" selected>Colori (profondit&agrave;)</option>
-      <option value="rilievo">Rilievo / strutture</option>
+      <option value="rilievo">Rilievo / strutture (GEBCO)</option>
+      <option value="rilievohr">Rilievo HR (EMODnet, calcolato)</option>
     </select>
   </div>
   <div class="row" style="align-items:center; gap:8px; margin:4px 0 6px 0;">
@@ -837,6 +838,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <input type="checkbox" id="isoChk">
     <label for="isoChk">Isobate (linee di profondit&agrave;)</label>
   </div>
+  <div class="desc" id="hillInfo" style="display:none;"></div>
   <div class="chkrow">
     <input type="checkbox" id="sstChk">
     <label for="sstChk">Temperatura mare (SST) sopra</label>
@@ -960,24 +962,86 @@ map.getPane('chlPane').style.filter = 'brightness(1.2) saturate(1.3)';
 map.getPane('chlPane').style.pointerEvents = 'none';
 let chlOpacity = 0.6;   // regolata dallo slider "Trasparenza mare"
 
-// === FONDALE: Colori (EMODnet) oppure Rilievo/strutture (GEBCO hillshade) ===
+// === FONDALE: Colori (EMODnet), Rilievo GEBCO, o Rilievo HR (hillshade calcolato da EMODnet) ===
+let hillOverlay = null, hillToken = 0, geotiffLoad = null;
 const bathyLayer = L.tileLayer.wms('https://ows.emodnet-bathymetry.eu/wms', {
   layers:'emodnet:mean_multicolour', format:'image/png', transparent:true,
   opacity:0.95, pane:'bathyPane', maxZoom:19, attribution:'&copy; EMODnet Bathymetry'
 });
-// GEBCO rilievo ombreggiato: il fondale come STRUTTURE (banchi, scarpate, canyon)
 const reliefLayer = L.tileLayer.wms('https://wms.gebco.net/mapserv', {
   layers:'GEBCO_LATEST', version:'1.3.0', format:'image/png', transparent:true,
   opacity:0.95, pane:'bathyPane', maxZoom:19, attribution:'&copy; GEBCO'
 });
 function bathyOpac(){ return (+document.getElementById('bathyOpacity').value)/100; }
+function bathyMode(){ return document.getElementById('bathyMode').value; }
+function hillNote(t){ const el=document.getElementById('hillInfo'); if(!el)return; el.textContent=t||''; el.style.display=t?'block':'none'; }
 function refreshBathy(){
-  const mode = document.getElementById('bathyMode').value;
+  const mode = bathyMode();
   map.removeLayer(bathyLayer); map.removeLayer(reliefLayer);
+  if (mode !== 'rilievohr'){ if(hillOverlay){ map.removeLayer(hillOverlay); hillOverlay=null; } hillNote(''); }
   if (mode === 'colori'){ bathyLayer.setOpacity(bathyOpac()); bathyLayer.addTo(map); }
   else if (mode === 'rilievo'){ reliefLayer.setOpacity(bathyOpac()); reliefLayer.addTo(map); }
+  else if (mode === 'rilievohr'){ updateHillshade(); }
 }
 document.getElementById('bathyMode').addEventListener('change', refreshBathy);
+
+// geotiff.js caricato solo quando serve (lazy)
+function ensureGeoTIFF(){
+  if (typeof GeoTIFF !== 'undefined') return Promise.resolve();
+  if (geotiffLoad) return geotiffLoad;
+  geotiffLoad = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.min.js';
+    s.onload = res; s.onerror = () => rej(new Error('geotiff.js non caricato'));
+    document.head.appendChild(s);
+  });
+  return geotiffLoad;
+}
+// Hillshade calcolato dal grigliato EMODnet (WCS GeoTIFF) per la vista corrente
+async function updateHillshade(){
+  if (bathyMode() !== 'rilievohr') return;
+  if (map.getZoom() < 9){ if(hillOverlay){map.removeLayer(hillOverlay);hillOverlay=null;} hillNote('Zoom in (livello 9+) per il rilievo HR EMODnet.'); return; }
+  const tok = ++hillToken; hillNote('Calcolo rilievo EMODnet...');
+  try {
+    await ensureGeoTIFF(); if (tok !== hillToken) return;
+    const bn=map.getBounds(), s=bn.getSouth(), n=bn.getNorth(), w=bn.getWest(), e=bn.getEast();
+    const midLat0=(s+n)/2;
+    const estW=(e-w)*111320*Math.cos(midLat0*Math.PI/180)/100, estH=(n-s)*111320/100;  // px nativi stimati (~100 m)
+    const sf=Math.min(1, 760/Math.max(estW, estH, 1));                                  // cap lato lungo ~760 px
+    const url = 'https://ows.emodnet-bathymetry.eu/wcs?service=WCS&version=2.0.1&request=GetCoverage'
+      + '&coverageId=emodnet__mean&format=image/tiff'
+      + '&subset=Lat(' + s.toFixed(5) + ',' + n.toFixed(5) + ')&subset=Long(' + w.toFixed(5) + ',' + e.toFixed(5) + ')'
+      + (sf < 0.95 ? '&scalefactor=' + sf.toFixed(4) : '');
+    const ab = await (await fetch(url)).arrayBuffer(); if (tok !== hillToken) return;
+    const img = await (await GeoTIFF.fromArrayBuffer(ab)).getImage();
+    const gw = img.getWidth(), gh = img.getHeight();
+    if (gw*gh > 800000){ hillNote('Area troppo grande: zoom in per il rilievo HR.'); return; }
+    const A = (await img.readRasters())[0], bb = img.getBoundingBox();   // [minLon,minLat,maxLon,maxLat]
+    const midLat=(bb[1]+bb[3])/2;
+    const pxLon=(bb[2]-bb[0])/gw*111320*Math.cos(midLat*Math.PI/180), pxLat=(bb[3]-bb[1])/gh*111320;
+    const az=315*Math.PI/180, alt=45*Math.PI/180, zf=4.0;
+    const cv=document.createElement('canvas'); cv.width=gw; cv.height=gh;
+    const ctx=cv.getContext('2d'), out=ctx.createImageData(gw,gh);
+    const ok=v=>(v>-12000&&v<9000);
+    const el=(x,y)=>{ x=x<0?0:(x>=gw?gw-1:x); y=y<0?0:(y>=gh?gh-1:y); const v=A[y*gw+x]; return ok(v)?v:NaN; };
+    for (let y=0;y<gh;y++) for (let x=0;x<gw;x++){
+      const a=el(x-1,y-1),b=el(x,y-1),c=el(x+1,y-1),d=el(x-1,y),f=el(x+1,y),g=el(x-1,y+1),hh=el(x,y+1),ii=el(x+1,y+1);
+      let dzdx=((c+2*f+ii)-(a+2*d+g))/(8*pxLon), dzdy=((g+2*hh+ii)-(a+2*b+c))/(8*pxLat);
+      if (!isFinite(dzdx)||!isFinite(dzdy)){ dzdx=0; dzdy=0; }
+      dzdx*=zf; dzdy*=zf;
+      const slope=Math.atan(Math.sqrt(dzdx*dzdx+dzdy*dzdy)), aspect=Math.atan2(dzdy,-dzdx);
+      let hs=Math.cos(alt)*Math.cos(slope)+Math.sin(alt)*Math.sin(slope)*Math.cos(az-aspect); hs=hs<0?0:hs;
+      const gray=Math.round(35+hs*205), cur=A[y*gw+x], land=!ok(cur)||cur>0, o=(y*gw+x)*4;
+      out.data[o]=gray; out.data[o+1]=gray; out.data[o+2]=gray; out.data[o+3]=land?0:240;
+    }
+    ctx.putImageData(out,0,0); if (tok !== hillToken) return;
+    if (hillOverlay) map.removeLayer(hillOverlay);
+    hillOverlay = L.imageOverlay(cv.toDataURL('image/png'), [[bb[1],bb[0]],[bb[3],bb[2]]], { opacity:bathyOpac(), pane:'bathyPane', interactive:false });
+    hillOverlay.addTo(map);
+    hillNote('Rilievo EMODnet ' + gw + '×' + gh + ' (~115 m). Pan/zoom per ricalcolare.');
+  } catch(err){ hillNote('Rilievo HR non disponibile qui (' + (err.message||err) + ').'); }
+}
+map.on('moveend', () => { if (bathyMode() === 'rilievohr') updateHillshade(); });
 refreshBathy();
 
 // === ISOBATE EMODnet (linee di profondita') - pane dedicato sopra il fondale ===
@@ -989,10 +1053,11 @@ const isoLayer = L.tileLayer.wms('https://ows.emodnet-bathymetry.eu/wms', {
 document.getElementById('isoChk').addEventListener('change', e => {
   if (e.target.checked) isoLayer.addTo(map); else map.removeLayer(isoLayer);
 });
-// Slider: attenua il fondale (si applica al layer attivo: colori o rilievo)
+// Slider: attenua il fondale (colori, rilievo GEBCO o rilievo HR)
 const bathyOp = document.getElementById('bathyOpacity');
 bathyOp.addEventListener('input', e => {
   const v = +e.target.value; bathyLayer.setOpacity(v/100); reliefLayer.setOpacity(v/100);
+  if (hillOverlay) hillOverlay.setOpacity(v/100);
   document.getElementById('bathyOpacityVal').textContent = v + '%';
 });
 // Slider: risalto clorofilla (filtro sul pane: piu' saturazione/contrasto/luminosita')
