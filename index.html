@@ -1102,6 +1102,8 @@ refreshBathy();
 
 // === ISOBATE EMODnet (linee di profondita') - pane SOPRA la clorofilla (z370 > chlPane 360), cosi' le linee non vengono coperte dal dato cloro NASA/Copernicus ===
 map.createPane('isoPane'); map.getPane('isoPane').style.zIndex = 370;
+// vira le isobate EMODnet (tile cross-origin) verso il celeste, per renderle piu' visibili su grigio e clorofilla
+map.getPane('isoPane').style.filter = 'grayscale(1) brightness(0.6) sepia(1) saturate(12) hue-rotate(160deg) brightness(1.5)';
 const isoLayer = L.tileLayer.wms('https://ows.emodnet-bathymetry.eu/wms', {
   layers:'emodnet:contours', format:'image/png', transparent:true,
   opacity:0.9, pane:'isoPane', maxZoom:19, attribution:'&copy; EMODnet Bathymetry'
