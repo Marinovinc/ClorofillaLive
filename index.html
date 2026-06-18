@@ -1236,7 +1236,7 @@ Object.keys(PRODUCTS).filter(k => PRODUCTS[k].kind === 'chl').forEach(k => {
   const o = document.createElement('option');
   o.value = k; o.textContent = PRODUCTS[k].name; sel.appendChild(o);
 });
-sel.value = 'MED_HR';   // default: HR 100m costa (massimo dettaglio, copre Ischia)
+sel.value = 'MED_L4';   // default: Mediterraneo L4 gapfree 1km - copre TUTTO il Med, anche l'alto mare (no buchi nuvole)
 sel.addEventListener('change', refreshLayer);
 
 // === DATE + ANIMAZIONE ===
