@@ -1029,6 +1029,7 @@ function renderHillshade(){
     dzdx*=zf; dzdy*=zf;
     const slope=Math.atan(Math.sqrt(dzdx*dzdx+dzdy*dzdy)), aspect=Math.atan2(dzdy,-dzdx);
     let hs=Math.cos(alt)*Math.cos(slope)+Math.sin(alt)*Math.sin(slope)*Math.cos(az-aspect); hs=hs<0?0:hs;
+    hs=0.38+0.62*hs;   // luce ambiente: le ombre non vanno mai a nero, il fondale resta sempre visibile
     const gray=Math.round(base+hs*(255-base)), cur=A[y*gw+x], land=!ok(cur)||cur>0, o=(y*gw+x)*4;
     out.data[o]=gray; out.data[o+1]=gray; out.data[o+2]=gray; out.data[o+3]=land?0:240;
   }
