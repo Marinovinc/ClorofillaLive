@@ -989,7 +989,7 @@ map.getPane('chlPane').style.pointerEvents = 'none';
 let chlOpacity = 0.85;   // regolata dallo slider "Trasparenza mare"
 
 // === FONDALE: Colori (EMODnet), Rilievo GEBCO, o Rilievo HR (hillshade calcolato da EMODnet) ===
-let hillOverlay = null, hillToken = 0, geotiffLoad = null;
+let hillOverlay = null, hillToken = 0, geotiffLoad = null, hillAbort = null;
 const bathyLayer = L.tileLayer.wms('https://ows.emodnet-bathymetry.eu/wms', {
   layers:'emodnet:mean_multicolour', format:'image/png', transparent:true,
   opacity:0.95, pane:'bathyPane', maxZoom:19, attribution:'&copy; EMODnet Bathymetry'
@@ -1071,6 +1071,9 @@ async function updateHillshade(){
   if (bathyMode() !== 'rilievohr') return;
   if (map.getZoom() < 9){ if(hillOverlay){map.removeLayer(hillOverlay);hillOverlay=null;} hillGrid=null; hillNote('Zoom in (livello 9+) per il rilievo HR EMODnet.'); return; }
   const tok = ++hillToken; hillNote('Calcolo rilievo EMODnet...');
+  if (hillAbort) hillAbort.abort();                 // annulla la richiesta precedente (no fetch fantasma in coda su pan rapidi)
+  const ac = new AbortController(); hillAbort = ac;
+  const timer = setTimeout(() => ac.abort(), 15000);  // niente attesa infinita su rete scarsa
   try {
     await ensureGeoTIFF(); if (tok !== hillToken) return;
     const bn=map.getBounds(), s=bn.getSouth(), n=bn.getNorth(), w=bn.getWest(), e=bn.getEast();
@@ -1081,7 +1084,11 @@ async function updateHillshade(){
       + '&coverageId=emodnet__mean&format=image/tiff'
       + '&subset=Lat(' + s.toFixed(5) + ',' + n.toFixed(5) + ')&subset=Long(' + w.toFixed(5) + ',' + e.toFixed(5) + ')'
       + (sf < 0.95 ? '&scalefactor=' + sf.toFixed(4) : '');
-    const ab = await (await fetch(url)).arrayBuffer(); if (tok !== hillToken) return;
+    const resp = await fetch(url, { signal: ac.signal }); if (tok !== hillToken) return;
+    if (!resp.ok) throw new Error('EMODnet HTTP ' + resp.status);
+    const ct = resp.headers.get('content-type') || '';
+    if (/xml|html|json/i.test(ct)) throw new Error('nessun dato per quest\'area');  // WCS restituisce XML in caso di errore
+    const ab = await resp.arrayBuffer(); if (tok !== hillToken) return;
     const img = await (await GeoTIFF.fromArrayBuffer(ab)).getImage();
     const gw = img.getWidth(), gh = img.getHeight();
     if (gw*gh > 800000){ hillNote('Area troppo grande: zoom in per il rilievo HR.'); return; }
@@ -1089,7 +1096,13 @@ async function updateHillshade(){
     hillGrid = {A:A, gw:gw, gh:gh, bb:bb};
     renderHillshade();
     hillNote('Rilievo EMODnet ' + gw + '×' + gh + ' (~115 m). Pan/zoom per ricalcolare; slider per regolare.');
-  } catch(err){ hillNote('Rilievo HR non disponibile qui (' + (err.message||err) + ').'); }
+  } catch(err){
+    if (tok !== hillToken) return;                  // richiesta superata da un pan piu' recente: silenzio
+    if (err && err.name === 'AbortError') hillNote('Rilievo HR: rete lenta o assente - riprova con segnale migliore.');
+    else hillNote('Rilievo HR non disponibile qui (' + (err.message||err) + ').');
+  } finally {
+    clearTimeout(timer); if (hillAbort === ac) hillAbort = null;
+  }
 }
 // gli slider regolano il rilievo all'istante (ri-render dalla cache, senza riscaricare)
 ['hillBright','hillExag','bandMin','bandMax'].forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('input', renderHillshade); });
