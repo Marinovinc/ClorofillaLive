@@ -869,6 +869,10 @@ svg.leaflet-image-layer.leaflet-interactive path {
     <input type="checkbox" id="sstChk">
     <label for="sstChk">Temperatura mare (SST) sopra</label>
   </div>
+  <div class="chkrow">
+    <input type="checkbox" id="slaChk">
+    <label for="slaChk">Livello mare / convergenze (SSHA)</label>
+  </div>
   <button id="frontBtn">Trova hot-spot pelagici (vista attuale)</button>
   <div class="desc" id="frontInfo">Il fronte (color line) e' il bordo tra acqua ricca e povera: campiona la vista corrente su un prodotto Mediterraneo.</div>
   <div class="row" style="margin-top:8px;">
@@ -963,6 +967,14 @@ const PRODUCTS = {
     dataset: 'cmems_obs-sst_med_phy-sst_nrt_diurnal-oi-0.0625deg_PT1H-m_202105',
     variable: 'analysed_sst', style: 'cmap:thermal', cadence: 'daily', point: true, maxNative: 12,
     desc: 'Temperatura mare L4 (solo Med, ~6km).'
+  },
+  SLA_NRT: {
+    kind: 'sla',
+    name: 'Livello mare / convergenze (SSHA)',
+    product: 'SEALEVEL_EUR_PHY_L4_NRT_008_060',
+    dataset: 'cmems_obs-sl_eur_phy-ssh_nrt_allsat-l4-duacs-0.0625deg_P1D_202506',
+    variable: 'sla', style: 'cmap:plasma', cadence: 'daily', point: true, maxNative: 9,
+    desc: 'Anomalia livello mare (SSHA): vortici/convergenze; i bordi raccolgono il foraggio. Europa/Med.'
   }
 };
 
@@ -981,6 +993,7 @@ L.control.zoom({ position:'topright' }).addTo(map);
 // Ordine dei livelli (dal basso): satellite (tilePane 200) < fondale < SST < clorofilla.
 map.createPane('bathyPane'); map.getPane('bathyPane').style.zIndex = 250;
 map.createPane('sstPane');   map.getPane('sstPane').style.zIndex   = 300;
+map.createPane('slaPane');   map.getPane('slaPane').style.zIndex   = 290;
 // Pane clorofilla: sempre il livello piu' alto, piu' luminoso, trasparente sul fondale.
 map.createPane('chlPane');
 map.getPane('chlPane').style.zIndex = 360;
@@ -1159,6 +1172,7 @@ L.control.layers(baseLayers, null, { position:'topright', collapsed:true }).addT
 // === OVERLAY CLOROFILLA + SST ===
 let chlLayer = null;
 let sstLayer = null;
+let slaLayer = null;
 
 function buildWmtsTemplate(key){
   const p = PRODUCTS[key];
@@ -1207,12 +1221,23 @@ function refreshSst(){
   }
 }
 
+function refreshSla(){
+  if (slaLayer){ map.removeLayer(slaLayer); slaLayer = null; }
+  if (document.getElementById('slaChk').checked){
+    slaLayer = L.tileLayer(buildWmtsTemplate('SLA_NRT'),
+      { opacity:0.5, maxZoom:19, maxNativeZoom: PRODUCTS.SLA_NRT.maxNative,
+        pane:'slaPane', attribution:'Copernicus Marine - SSHA' });
+    slaLayer.addTo(map);
+  }
+}
+
 // Cambio istantaneo (selettore prodotto, slider, bottoni rapidi)
 function refreshLayer(){
   const key = document.getElementById('productSelect').value;
   if (chlLayer){ map.removeLayer(chlLayer); chlLayer = null; }
   chlLayer = makeChl(key, chlOpacity); chlLayer.addTo(map);
   refreshSst();
+  refreshSla();
   updateDateLabels();
 }
 
@@ -1223,6 +1248,7 @@ function crossfadeChl(){
   fading = true;
   updateDateLabels();
   refreshSst();
+  refreshSla();
   const oldL = chlLayer;
   const newL = makeChl(key, 0);   // parte invisibile, sfuma in entrata
   newL.addTo(map);
@@ -1525,6 +1551,8 @@ document.getElementById('ischiaBtn').addEventListener('click', () => {
 
 // === SST: toggle overlay ===
 document.getElementById('sstChk').addEventListener('change', refreshLayer);
+// === SSHA (livello mare / convergenze): toggle overlay ===
+document.getElementById('slaChk').addEventListener('change', refreshLayer);
 
 // === TRASPARENZA mare (opacita' clorofilla) ===
 document.getElementById('opacity').addEventListener('input', (ev) => {
